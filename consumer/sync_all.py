@@ -366,6 +366,7 @@ async def main():
     
     print("Setting up hyper-fast pull consumer...")
     try:
+        import time
         sub = await js.pull_subscribe("academics.enrollment.main.profile", f"mass_sync_consumer_{int(time.time())}", stream="EnrollmentData")
     except Exception as e:
         print(f"Failed to subscribe: {e}")

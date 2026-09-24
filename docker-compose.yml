@@ -29,7 +29,7 @@ services:
       - nats
     environment:
       - NATS_URL=nats://nats:4222
-      - LARAVEL_API_URL=http://host.docker.internal/api/internal/students/sync-legacy
+      - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
