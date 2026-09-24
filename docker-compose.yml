@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  nats:
+    image: nats:latest
+    command: -js
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+
+  debezium:
+    image: quay.io/debezium/server:2.5
+    depends_on:
+      - nats
+    volumes:
+      - ./debezium/application.properties:/debezium/conf/application.properties
+      - debezium-data:/debezium/data
+    environment:
+      - DEBEZIUM_OPTS=-Xmx256m
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  faststream:
+    build:
+      context: ./consumer
+    depends_on:
+      - nats
+    environment:
+      - NATS_URL=nats://nats:4222
+      - LARAVEL_API_URL=http://host.docker.internal/api/internal/students/sync-legacy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  nats-data:
+  debezium-data:
