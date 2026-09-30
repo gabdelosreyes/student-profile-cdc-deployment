@@ -1,51 +1,60 @@
+"""
+FastStream CDC Consumer: main.py
+Description: This is the core FastStream application running inside the Docker container. 
+It listens to the local NATS stream 'LocalCDCStream' for CDC events pushed by Debezium 
+(whenever Laravel's student_profile or student_info tables change). It then combines 
+the data and publishes the final, unified payload to the remote NATS JetStream 
+subject 'academics.enrollment.main.student.profile'.
+"""
 import os
 import json
-from faststream import FastStream
-from faststream.nats import NatsBroker
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from faststream.nats.fastapi import NatsRouter
 from sqlalchemy import create_engine, text
 import datetime
 
-NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
+LOCAL_NATS_URL = os.getenv("LOCAL_NATS_URL", "nats://127.0.0.1:4222")
+REMOTE_NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
 NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\nats-cli-deployment\univ-reg.creds")
 MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cvsu")
 
-broker = NatsBroker(NATS_URL, user_credentials=NATS_CREDS)
-app = FastStream(broker)
+# Listen to LOCAL NATS where Debezium is publishing (no auth)
+router = NatsRouter(LOCAL_NATS_URL)
 engine = create_engine(MYSQL_URL, pool_recycle=3600)
 
 TARGET_SUBJECT = "academics.enrollment.main.student.profile"
 
+from nats.aio.client import Client as RawNATS
+remote_nc = RawNATS()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"Connecting to remote NATS {REMOTE_NATS_URL}...")
+    await remote_nc.connect(REMOTE_NATS_URL, user_credentials=NATS_CREDS)
+    print("Connected to remote NATS successfully!")
+    async with router.lifespan_context(app):
+        yield
+    await remote_nc.close()
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "CDC Consumer via FastAPI"}
+
 def get_student_payload(student_number: str) -> dict:
     query = text("""
         SELECT 
-            sp.student_number AS studentNumber,
-            si.first_name AS firstName,
-            si.last_name AS lastName,
-            si.mid_name AS middleName,
-            si.suffix AS suffix,
-            si.street AS street,
-            brgy.name AS barangay,
-            mun.name AS municipality,
-            prov.name AS province,
-            si.date_of_birth AS dateOfBirth,
-            si.gender AS gender,
-            rel.religion AS religion,
-            si.nationality AS citizenship,
-            si.marital_status AS status,
-            sg.guardian_name AS guardian,
-            si.contact_no AS mobilePhone,
-            si.email AS email,
-            sp.year_admitted AS yearAdmitted,
-            sp.sem_admitted AS SemesterAdmitted,
-            prog.code AS course
+            sp.*, 
+            si.first_name, si.mid_name, si.last_name, si.suffix, si.gender,
+            si.regions_id, si.provinces_id, si.municipalities_id, si.brgys_id,
+            si.street, si.zip_code, si.date_of_birth, si.religion_id, si.nationality,
+            si.marital_status, si.email, si.cvsu_email, si.contact_no, si.is_pwd,
+            si.photo_path
         FROM student_profile sp
         LEFT JOIN student_info si ON sp.student_number = si.student_number
-        LEFT JOIN geographic_codes brgy ON si.brgys_id = brgy.id
-        LEFT JOIN geographic_codes mun ON si.municipalities_id = mun.id
-        LEFT JOIN geographic_codes prov ON si.provinces_id = prov.id
-        LEFT JOIN religions rel ON si.religion_id = rel.id
-        LEFT JOIN student_guardians sg ON sp.student_number = sg.student_number
-        LEFT JOIN programs prog ON sp.program_id = prog.id
         WHERE sp.student_number = :student_number
         LIMIT 1;
     """)
@@ -54,48 +63,18 @@ def get_student_payload(student_number: str) -> dict:
         result = conn.execute(query, {"student_number": student_number}).fetchone()
         
     if not result:
-        return {"studentNumber": student_number}
+        return {"student_number": student_number}
         
-    row = result._mapping
+    row = dict(result._mapping)
     
-    # Calculate date of birth as days since epoch (Debezium DATE format)
-    dob_days = 0
-    if row.get("dateOfBirth"):
-        delta = row["dateOfBirth"] - datetime.date(1970, 1, 1)
-        dob_days = delta.days
-
-    return {
-        "studentNumber": row.get("studentNumber"),
-        "firstName": row.get("firstName"),
-        "lastName": row.get("lastName"),
-        "middleName": row.get("middleName"),
-        "suffix": row.get("suffix") or "N/A",
-        "street": row.get("street"),
-        "barangay": row.get("barangay"),
-        "municipality": row.get("municipality"),
-        "province": row.get("province"),
-        "dateOfBirth": dob_days,
-        "gender": row.get("gender"),
-        "religion": row.get("religion"),
-        "citizenship": row.get("citizenship"),
-        "status": row.get("status"),
-        "guardian": row.get("guardian"),
-        "mobilePhone": row.get("mobilePhone"),
-        "email": row.get("email"),
-        "yearAdmitted": row.get("yearAdmitted"),
-        "SemesterAdmitted": row.get("SemesterAdmitted"),
-        "course": row.get("course"),
+    # Format date of birth to string if it exists (since datetime.date is not JSON serializable natively by all libs)
+    if row.get("date_of_birth"):
+        row["date_of_birth"] = str(row["date_of_birth"])
         
-        # Legacy/Unmapped fields from the screenshot
-        "cardNumber": "0",
-        "studentincrement": 0,
-        "lastupdate": "N/A",
-        "highschool": "N/A",
-        "curriculumid": 0,
-    }
+    return row
 
-@broker.subscriber("academics.enrollment.main.registrar-cvsu.student_info")
-@broker.subscriber("academics.enrollment.main.registrar-cvsu.student_profile")
+@router.subscriber("academics.enrollment.main.registrar-cvsu.student_info")
+@router.subscriber("academics.enrollment.main.registrar-cvsu.student_profile")
 async def handle_student_cdc_event(msg: dict):
     payload = msg.get("payload", {})
     if not payload:
@@ -126,6 +105,7 @@ async def handle_student_cdc_event(msg: dict):
     unified["__deleted"] = "true" if is_deleted else "false"
     unified["__changed_fields"] = changed_fields
     
-    # Publish to unified target topic
+    # Publish to unified target topic on REMOTE NATS
     print(f"Publishing unified student {student_number} to {TARGET_SUBJECT}...")
-    await broker.publish(unified, TARGET_SUBJECT)
+    import json
+    await remote_nc.publish(TARGET_SUBJECT, json.dumps(unified).encode('utf-8'))

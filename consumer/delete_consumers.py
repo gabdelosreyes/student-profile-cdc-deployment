@@ -1,3 +1,10 @@
+"""
+Utility Script: delete_consumers.py
+Description: This script connects to the remote NATS server and scans for orphaned 
+consumers created by interrupted runs of sync_all.py (mass_sync_consumer_*). 
+It safely deletes these ephemeral consumers to free up memory and prevent 
+"maximum consumers reached" errors.
+"""
 import asyncio
 import os
 from nats.aio.client import Client as NATS

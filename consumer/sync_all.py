@@ -1,3 +1,11 @@
+"""
+Main Ingestion Script: sync_all.py
+Description: This script fetches the legacy JSON payloads from the remote NATS JetStream 
+('academics.enrollment.main.profile'). It cleans, normalizes, and maps the data to the 
+new Laravel database schema. It inserts the clean data into `student_profile` and 
+`student_info`, which in turn triggers Debezium to push CDC events. Unmatched/bad 
+legacy data is dumped into the `legacy_student_info` table for manual review.
+"""
 import asyncio
 import json
 import os
@@ -216,33 +224,37 @@ def process_batch(msgs):
             "student_number": student_num,
             "program_id": prog.id if prog else None,
             "major_id": None,
-            "year_level": 1,
-            "semester_id": sem.id if sem else 1,
-            "academic_year_id": ay.id if ay else 1,
-            "student_type_id": 1,
-            "student_status_id": 1,
+            "year_level": None,
+            "semester_id": sem.id if sem else None,
+            "academic_year_id": ay.id if ay else None,
+            "student_type_id": None,
+            "student_status_id": None,
             "campus_id": 1,
             "year_admitted": raw_ya or None,
             "sem_admitted": raw_sa or None
         })
         
         # Info Data
-        first = (normalize_null(data.get('firstName')) or 'UNKNOWN').upper()
-        last = (normalize_null(data.get('lastName')) or 'UNKNOWN').upper()
+        first_raw = normalize_null(data.get('firstName'))
+        first = first_raw.upper() if first_raw else None
+        
+        last_raw = normalize_null(data.get('lastName'))
+        last = last_raw.upper() if last_raw else None
+        
         mid = normalize_null(data.get('middleName'))
         if mid: mid = mid.upper()
+        
         suf = normalize_null(data.get('suffix'))
         if suf: suf = suf.upper()
         
         gender_raw = normalize_null(data.get('gender'))
-        gender = gender_raw.upper() if gender_raw else 'MALE'
-        if gender not in ('MALE', 'FEMALE'): gender = 'MALE'
+        gender = gender_raw.upper() if gender_raw else None
         
         marital_raw = normalize_null(data.get('status'))
-        marital = marital_raw.upper() if marital_raw else 'SINGLE'
+        marital = marital_raw.upper() if marital_raw else None
         
         nat_raw = normalize_null(data.get('citizenship'))
-        nat = nat_raw.upper() if nat_raw else 'FILIPINO'
+        nat = nat_raw.upper() if nat_raw else None
         
         raw_email = normalize_null(data.get('email'))
         email = None

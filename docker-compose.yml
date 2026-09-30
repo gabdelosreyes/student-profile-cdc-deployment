@@ -11,11 +11,12 @@ services:
       - nats-data:/data
 
   debezium:
-    image: quay.io/debezium/server:2.5
+    image: quay.io/debezium/server:3.0
     depends_on:
       - nats
     volumes:
-      - ./debezium/application.properties:/debezium/conf/application.properties
+      - ./debezium/application.properties:/debezium/config/application.properties
+      - c:\laragon\www\nats-cli-deployment\univ-reg.creds:/debezium/config/univ-reg.creds
       - debezium-data:/debezium/data
     environment:
       - DEBEZIUM_OPTS=-Xmx256m
@@ -27,9 +28,14 @@ services:
       context: ./consumer
     depends_on:
       - nats
+    ports:
+      - "8000:8000"
     environment:
-      - NATS_URL=nats://nats:4222
+      - LOCAL_NATS_URL=nats://nats:4222
+      - NATS_CREDS=/app/univ-reg.creds
       - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
+    volumes:
+      - c:\laragon\www\nats-cli-deployment\univ-reg.creds:/app/univ-reg.creds
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
