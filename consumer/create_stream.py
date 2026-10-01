@@ -15,12 +15,17 @@ async def main():
     js = nc.jetstream()
     try:
         await js.add_stream(name="LocalCDCStream", subjects=[
-            "academics.enrollment.main.registrar-cvsu.student_profile",
-            "academics.enrollment.main.registrar-cvsu.student_info",
-            "academics.enrollment.main.registrar-cvsu.outbox_events",
-            "academics.enrollment.main"
+            "academics.enrollment.main",
+            "academics.enrollment.main.>"
         ])
         print("Stream LocalCDCStream created successfully.")
+    except Exception as e:
+        # If already exists, update subjects
+        await js.update_stream(name="LocalCDCStream", subjects=[
+            "academics.enrollment.main",
+            "academics.enrollment.main.>"
+        ])
+        print("Stream LocalCDCStream updated successfully.")
     except Exception as e:
         print("Error:", e)
     await nc.close()

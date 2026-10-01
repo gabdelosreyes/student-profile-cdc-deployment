@@ -23,7 +23,7 @@ MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cv
 router = NatsRouter(LOCAL_NATS_URL)
 engine = create_engine(MYSQL_URL, pool_recycle=3600)
 
-TARGET_SUBJECT = "academics.enrollment.main.student.profile"
+TARGET_SUBJECT = "academics.enrollment.students.main.profile"
 
 from nats.aio.client import Client as RawNATS
 remote_nc = RawNATS()
@@ -73,7 +73,7 @@ def get_student_payload(student_number: str) -> dict:
         
     return row
 
-@router.subscriber("academics.enrollment.main.registrar-cvsu.outbox_events")
+@router.subscriber("academics.enrollment.main.registrar-cvsu.outbox_events", stream="LocalCDCStream", no_reply=True)
 async def handle_outbox_cdc_event(msg: dict):
     payload = msg.get("payload", {})
     if not payload:
@@ -100,10 +100,27 @@ async def handle_outbox_cdc_event(msg: dict):
         return
         
     student_number = event_envelope.get("aggregate_id") or after.get("aggregate_id")
-    target_subject = event_envelope.get("subject") or TARGET_SUBJECT
+    target_subject = event_envelope.get("subject")
+    if not target_subject or target_subject == "academics.enrollment.main.student.profile":
+        target_subject = TARGET_SUBJECT
+    event_envelope["subject"] = target_subject
     op = event_envelope.get("op", "u")
     
-    # Publish clean event envelope directly to the target subject on REMOTE NATS
+    # Ensure changes list is present
+    if "changes" not in event_envelope:
+        changes = []
+        if op == "u" and event_envelope.get("before") and event_envelope.get("after"):
+            b = event_envelope["before"]
+            a = event_envelope["after"]
+            all_keys = set(b.keys()).union(set(a.keys()))
+            for k in all_keys:
+                b_val = b.get(k)
+                a_val = a.get(k)
+                if b_val != a_val and str(b_val or "") != str(a_val or ""):
+                    changes.append(k)
+        event_envelope["changes"] = sorted(changes)
+
+    # Publish clean event envelope directly to the target subject on REMOTE NATS (STUDENTS stream)
     print(f"Publishing clean outbox student {student_number} (op={op}) to {target_subject}...")
     await remote_nc.publish(target_subject, json.dumps(event_envelope).encode('utf-8'))
 
