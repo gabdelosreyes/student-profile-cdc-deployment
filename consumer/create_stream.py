@@ -17,6 +17,7 @@ async def main():
         await js.add_stream(name="LocalCDCStream", subjects=[
             "academics.enrollment.main.registrar-cvsu.student_profile",
             "academics.enrollment.main.registrar-cvsu.student_info",
+            "academics.enrollment.main.registrar-cvsu.outbox_events",
             "academics.enrollment.main"
         ])
         print("Stream LocalCDCStream created successfully.")
