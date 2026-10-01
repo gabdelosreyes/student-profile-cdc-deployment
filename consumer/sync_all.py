@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from nats.aio.client import Client as NATS
 from sqlalchemy import create_engine, text
@@ -99,6 +100,7 @@ def process_batch(msgs):
     infos = []
     legacies = []
     resolved_legacies = []
+    outbox_events = []
     
     # Active defaults
     default_ay = next((ay for ay in ACADEMIC_YEARS if ay.is_active), ACADEMIC_YEARS[-1] if ACADEMIC_YEARS else None)
@@ -219,8 +221,7 @@ def process_batch(msgs):
         if not rel and raw_rel:
             mismatches['religion'] = f"Religion [{raw_rel}] not found."
             
-        # Profile Data
-        profiles.append({
+        profile_data = {
             "student_number": student_num,
             "program_id": prog.id if prog else None,
             "major_id": None,
@@ -232,7 +233,8 @@ def process_batch(msgs):
             "campus_id": 1,
             "year_admitted": raw_ya or None,
             "sem_admitted": raw_sa or None
-        })
+        }
+        profiles.append(profile_data)
         
         # Info Data
         first_raw = normalize_null(data.get('firstName'))
@@ -274,7 +276,7 @@ def process_batch(msgs):
             else:
                 contact = '+63' + contact
         
-        infos.append({
+        info_data = {
             "student_number": student_num,
             "first_name": first,
             "mid_name": mid,
@@ -294,6 +296,44 @@ def process_batch(msgs):
             "cvsu_email": cvsu_email,
             "contact_no": contact,
             "is_pwd": 0
+        }
+        infos.append(info_data)
+
+        # Standardized Transactional Outbox Event Envelope
+        now_ts = int(time.time() * 1000)
+        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        event_id = str(uuid.uuid4())
+
+        after_data = {
+            **profile_data,
+            **info_data,
+            "photo_path": None,
+            "zip_code": None,
+            "date_graduated": None,
+        }
+
+        envelope = {
+            "event_id": event_id,
+            "event_type": "student.profile.created",
+            "aggregate_type": "student_profile",
+            "aggregate_id": student_num,
+            "subject": "academics.enrollment.main.student.profile",
+            "op": "c",
+            "before": None,
+            "after": after_data,
+            "timestamp": now_ts,
+        }
+
+        outbox_events.append({
+            "event_id": event_id,
+            "event_type": "student.profile.created",
+            "aggregate_type": "student_profile",
+            "aggregate_id": student_num,
+            "subject": "academics.enrollment.main.student.profile",
+            "op": "c",
+            "payload": json.dumps(envelope),
+            "created_at": now_str,
+            "updated_at": now_str,
         })
         
         if mismatches:
@@ -331,6 +371,14 @@ def process_batch(msgs):
                 first_name=VALUES(first_name), mid_name=VALUES(mid_name), last_name=VALUES(last_name), suffix=VALUES(suffix), gender=VALUES(gender), regions_id=VALUES(regions_id), provinces_id=VALUES(provinces_id), municipalities_id=VALUES(municipalities_id), brgys_id=VALUES(brgys_id), street=VALUES(street), date_of_birth=VALUES(date_of_birth), religion_id=VALUES(religion_id), nationality=VALUES(nationality), marital_status=VALUES(marital_status), email=VALUES(email), cvsu_email=VALUES(cvsu_email), contact_no=VALUES(contact_no), is_pwd=VALUES(is_pwd)
             """), infos)
             
+        if outbox_events:
+            session.execute(text("""
+                INSERT INTO outbox_events (event_id, event_type, aggregate_type, aggregate_id, subject, op, payload, created_at, updated_at)
+                VALUES (:event_id, :event_type, :aggregate_type, :aggregate_id, :subject, :op, :payload, :created_at, :updated_at)
+                ON DUPLICATE KEY UPDATE 
+                payload=VALUES(payload), updated_at=VALUES(updated_at)
+            """), outbox_events)
+
         if legacies:
             session.execute(text("""
                 INSERT INTO legacy_student_info (student_number, legacy_street, legacy_barangay, legacy_municipality, legacy_province, legacy_course, legacy_religion, legacy_payload, mismatch_fields, mismatch_summary, is_resolved)

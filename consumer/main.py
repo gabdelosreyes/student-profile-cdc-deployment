@@ -107,40 +107,11 @@ async def handle_outbox_cdc_event(msg: dict):
     print(f"Publishing clean outbox student {student_number} (op={op}) to {target_subject}...")
     await remote_nc.publish(target_subject, json.dumps(event_envelope).encode('utf-8'))
 
-@router.subscriber("academics.enrollment.main.registrar-cvsu.student_info")
-@router.subscriber("academics.enrollment.main.registrar-cvsu.student_profile")
-async def handle_student_cdc_event(msg: dict):
-    payload = msg.get("payload", {})
-    if not payload:
-        return
-        
-    op = payload.get("op")
-    before = payload.get("before") or {}
-    after = payload.get("after") or {}
-    
-    # Determine student number
-    student_number = after.get("student_number") or before.get("student_number")
-    if not student_number:
-        return
-        
-    is_deleted = (op == "d")
-    
-    # Calculate changed fields for this specific event
-    changed_fields = []
-    if op == "u" and before and after:
-        for k, v in after.items():
-            if before.get(k) != v:
-                changed_fields.append(k)
-                
-    # Fetch unified payload
-    unified = get_student_payload(student_number)
-    
-    # Inject metadata
-    unified["__deleted"] = "true" if is_deleted else "false"
-    unified["__changed_fields"] = changed_fields
-    
-    # Publish to unified target topic on REMOTE NATS
-    print(f"Publishing unified student {student_number} to {TARGET_SUBJECT}...")
-    import json
-    await remote_nc.publish(TARGET_SUBJECT, json.dumps(unified).encode('utf-8'))
+# Legacy direct-table listener superseded by handle_outbox_cdc_event
+# All student events are now unified through the outbox_events table.
+# @router.subscriber("academics.enrollment.main.registrar-cvsu.student_info")
+# @router.subscriber("academics.enrollment.main.registrar-cvsu.student_profile")
+# async def handle_student_cdc_event(msg: dict):
+#     ...
+
 
