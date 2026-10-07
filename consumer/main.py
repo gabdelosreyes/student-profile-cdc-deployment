@@ -8,6 +8,7 @@ subject 'academics.enrollment.main.student.profile'.
 """
 import os
 import json
+import uuid
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from faststream.nats.fastapi import NatsRouter
@@ -24,6 +25,7 @@ router = NatsRouter(LOCAL_NATS_URL)
 engine = create_engine(MYSQL_URL, pool_recycle=3600)
 
 TARGET_SUBJECT = "academics.enrollment.students.main.profile"
+MAIN_SUBJECT = "academics.enrollment.main.student.profile"
 
 from nats.aio.client import Client as RawNATS
 remote_nc = RawNATS()
@@ -73,56 +75,35 @@ def get_student_payload(student_number: str) -> dict:
         
     return row
 
-@router.subscriber("academics.enrollment.main.registrar-cvsu.outbox_events", stream="LocalCDCStream", no_reply=True)
+@router.subscriber("academics.enrollment.main.student.profile", stream="LocalCDCStream", no_reply=True)
 async def handle_outbox_cdc_event(msg: dict):
-    payload = msg.get("payload", {})
-    if not payload:
-        payload = msg
-        
-    after = payload.get("after") or {}
-    if not after:
-        return
-        
-    # Extract clean event envelope from outbox record's payload field
-    raw_event_payload = after.get("payload")
-    if not raw_event_payload:
-        return
-        
-    if isinstance(raw_event_payload, str):
-        try:
-            event_envelope = json.loads(raw_event_payload)
-        except Exception as e:
-            print(f"Error parsing outbox payload JSON: {e}")
-            return
-    elif isinstance(raw_event_payload, dict):
-        event_envelope = raw_event_payload
+    # Support both envelope-wrapped payload (from Debezium additional.placement=envelope) and flat payloads
+    if "payload" in msg and isinstance(msg["payload"], dict):
+        event_id = msg.get("eventId") or str(uuid.uuid4())
+        event_type = msg.get("eventType")
+        payload = msg["payload"]
     else:
-        return
-        
-    student_number = event_envelope.get("aggregate_id") or after.get("aggregate_id")
-    target_subject = event_envelope.get("subject")
-    if not target_subject or target_subject == "academics.enrollment.main.student.profile":
-        target_subject = TARGET_SUBJECT
-    event_envelope["subject"] = target_subject
-    op = event_envelope.get("op", "u")
-    
-    # Ensure changes list is present
-    if "changes" not in event_envelope:
-        changes = []
-        if op == "u" and event_envelope.get("before") and event_envelope.get("after"):
-            b = event_envelope["before"]
-            a = event_envelope["after"]
-            all_keys = set(b.keys()).union(set(a.keys()))
-            for k in all_keys:
-                b_val = b.get(k)
-                a_val = a.get(k)
-                if b_val != a_val and str(b_val or "") != str(a_val or ""):
-                    changes.append(k)
-        event_envelope["changes"] = sorted(changes)
+        payload = dict(msg)
+        event_id = payload.pop("eventId", None) or str(uuid.uuid4())
+        event_type = payload.pop("eventType", None)
 
-    # Publish clean event envelope directly to the target subject on REMOTE NATS (STUDENTS stream)
-    print(f"Publishing clean outbox student {student_number} (op={op}) to {target_subject}...")
-    await remote_nc.publish(target_subject, json.dumps(event_envelope).encode('utf-8'))
+    if "student_number" in payload or "aggregate_id" in payload or "changes" in payload:
+        student_number = payload.get("student_number") or payload.get("aggregate_id")
+        op = payload.get("op", "u")
+        default_event_type = f"student.profile.{'created' if op == 'c' else 'updated' if op == 'u' else 'deleted'}"
+        event_type = event_type or default_event_type
+
+        headers = {
+            "content-type": "application/json",
+            "eventType": str(event_type),
+            "Nats-Msg-Id": str(event_id),
+        }
+
+        print(f"Relaying live student change {student_number} (op={op}, eventType={event_type}, eventId={event_id}) with headers to remote {TARGET_SUBJECT} and {MAIN_SUBJECT}...")
+        encoded = json.dumps(payload).encode('utf-8')
+        await remote_nc.publish(TARGET_SUBJECT, encoded, headers=headers)
+        await remote_nc.publish(MAIN_SUBJECT, encoded, headers=headers)
+        return
 
 # Legacy direct-table listener superseded by handle_outbox_cdc_event
 # All student events are now unified through the outbox_events table.

@@ -49,5 +49,22 @@ class TestOutboxConsumer(unittest.TestCase):
         self.assertEqual(event["after"]["first_name"], "NINA KLARISSE")
         self.assertNotIn("status", event)
 
+    def test_unwrapped_outbox_router_event_handling(self):
+        delta_event = {
+            "student_number": "202014166",
+            "op": "u",
+            "changed_fields": ["email"],
+            "changes": {
+                "email": "nina.updated@cvsu.edu.ph"
+            }
+        }
+
+        # Outbox Event Router sends the unwrapped payload directly
+        self.assertEqual(delta_event["student_number"], "202014166")
+        self.assertEqual(delta_event["op"], "u")
+        self.assertIn("email", delta_event["changed_fields"])
+        self.assertEqual(delta_event["changes"]["email"], "nina.updated@cvsu.edu.ph")
+        self.assertNotIn("before", delta_event)
+
 if __name__ == "__main__":
     unittest.main()

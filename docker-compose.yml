@@ -35,6 +35,7 @@ services:
       - NATS_CREDS=/app/univ-reg.creds
       - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
     volumes:
+      - ./consumer:/app
       - c:\laragon\www\nats-cli-deployment\univ-reg.creds:/app/univ-reg.creds
     extra_hosts:
       - "host.docker.internal:host-gateway"
