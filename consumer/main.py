@@ -11,6 +11,7 @@ import json
 import uuid
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from faststream.nats import JStream
 from faststream.nats.fastapi import NatsRouter
 from sqlalchemy import create_engine, text
 import datetime
@@ -75,7 +76,12 @@ def get_student_payload(student_number: str) -> dict:
         
     return row
 
-@router.subscriber("academics.enrollment.main.student.profile", stream="LocalCDCStream", no_reply=True)
+@router.subscriber(
+    "academics.enrollment.main.student.profile",
+    stream=JStream(name="LocalCDCStream", declare=False),
+    durable="faststream_cdc_bridge",
+    no_reply=True,
+)
 async def handle_outbox_cdc_event(msg: dict):
     # Support both envelope-wrapped payload (from Debezium additional.placement=envelope) and flat payloads
     if "payload" in msg and isinstance(msg["payload"], dict):
