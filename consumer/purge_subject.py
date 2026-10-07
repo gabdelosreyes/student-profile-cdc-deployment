@@ -10,7 +10,7 @@ from nats.aio.client import Client as NATS
 import os
 
 NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
-NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\nats-cli-deployment\univ-reg.creds")
+NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds")
 
 import sys
 

@@ -17,7 +17,7 @@ import datetime
 
 LOCAL_NATS_URL = os.getenv("LOCAL_NATS_URL", "nats://127.0.0.1:4222")
 REMOTE_NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
-NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\nats-cli-deployment\univ-reg.creds")
+NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds")
 MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cvsu")
 
 # Listen to LOCAL NATS where Debezium is publishing (no auth)

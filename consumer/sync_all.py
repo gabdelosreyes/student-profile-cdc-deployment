@@ -14,14 +14,16 @@ import time
 import uuid
 from datetime import datetime, timezone
 from nats.aio.client import Client as NATS
+from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
-NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\nats-cli-deployment\univ-reg.creds")
+NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds")
+MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cvsu")
 
 # SQLAlchemy Setup
-engine = create_engine("mysql+pymysql://root:@127.0.0.1/registrar-cvsu", pool_size=10, max_overflow=20)
+engine = create_engine(MYSQL_URL, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def clean_address_text(text_val):
@@ -368,50 +370,90 @@ async def process_and_ack(msgs):
         traceback.print_exc()
         print(f"Background task failed: {e}")
 
+DURABLE_CONSUMER = "registrar_legacy_sync"
+
+def get_student_count() -> int:
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text("SELECT COUNT(*) FROM student_profile")).scalar() or 0
+    except Exception:
+        return -1  # Database down or table does not exist during migration
+
 async def main():
     global db_semaphore
     db_semaphore = asyncio.Semaphore(1)
     
     load_caches()
     
-    nc = NATS()
-    print(f"Connecting to NATS at {NATS_URL}...")
-    await nc.connect(NATS_URL, user_credentials=NATS_CREDS)
-    js = nc.jetstream()
-    
-    print("Setting up hyper-fast pull consumer...")
-    try:
-        import time
-        sub = await js.pull_subscribe("academics.enrollment.main.profile", f"mass_sync_consumer_{int(time.time())}", stream="EnrollmentData")
-    except Exception as e:
-        print(f"Failed to subscribe: {e}")
-        await nc.close()
-        return
-        
-    print("Subscription successful. Starting fast bulk sync!")
-    synced_count = 0
-    
     while True:
+        nc = NATS()
         try:
-            # Fetch as many as NATS allows (usually capped at 1000-5000 by server)
-            msgs = await sub.fetch(5000, timeout=2.0)
-            if not msgs:
-                continue
-                
-            synced_count += len(msgs)
-            print(f"Fetched {synced_count} total records. Flushing to DB in background...")
+            print(f"Connecting to NATS at {NATS_URL}...")
+            await nc.connect(NATS_URL, user_credentials=NATS_CREDS)
+            js = nc.jetstream()
             
-            # FIRE AND FORGET:
-            # We process and ACK this batch in the background so we can immediately fetch the next batch!
-            asyncio.create_task(process_and_ack(msgs))
+            # Auto-detection: If student_profile is empty (e.g. migrate:fresh was run), reset consumer to backfill
+            initial_count = get_student_count()
+            if initial_count == 0:
+                print(f"Empty student_profile table detected (count=0). Resetting durable consumer '{DURABLE_CONSUMER}' to backfill from sequence 1...")
+                try:
+                    await js.delete_consumer("EnrollmentData", DURABLE_CONSUMER)
+                    print("Durable consumer reset successfully.")
+                except Exception:
+                    pass
+            elif initial_count > 0:
+                print(f"Found {initial_count} existing records in student_profile. Resuming incremental sync...")
             
-        except (TimeoutError, Exception) as e:
-            if "timeout" in str(e).lower() or isinstance(e, TimeoutError):
+            print(f"Subscribing with durable consumer '{DURABLE_CONSUMER}' on stream EnrollmentData...")
+            sub = await js.pull_subscribe(
+                "academics.enrollment.main.profile",
+                durable=DURABLE_CONSUMER,
+                stream="EnrollmentData",
+                config=ConsumerConfig(
+                    deliver_policy=DeliverPolicy.ALL,
+                    ack_policy=AckPolicy.EXPLICIT,
+                    ack_wait=60,
+                ),
+            )
+            print(f"Durable subscription '{DURABLE_CONSUMER}' active. Starting continuous legacy sync daemon...")
+            synced_count = 0
+            last_empty_check = time.time()
+            
+            while True:
+                try:
+                    msgs = await sub.fetch(5000, timeout=2.0)
+                    if not msgs:
+                        await asyncio.sleep(1.0)
+                        continue
+                        
+                    synced_count += len(msgs)
+                    print(f"Fetched {len(msgs)} records (Session total: {synced_count}). Flushing to DB in background...")
+                    asyncio.create_task(process_and_ack(msgs))
+                except (TimeoutError, Exception) as e:
+                    if "timeout" in str(e).lower() or isinstance(e, TimeoutError):
+                        # Stream is idle. Check periodically if the database was wiped while running
+                        if time.time() - last_empty_check > 5.0:
+                            last_empty_check = time.time()
+                            cnt = get_student_count()
+                            if cnt == 0 and synced_count > 0:
+                                print("Detected empty student_profile table (migrate:fresh was run). Resetting durable consumer...")
+                                try:
+                                    await js.delete_consumer("EnrollmentData", DURABLE_CONSUMER)
+                                except Exception:
+                                    pass
+                                break  # Reconnect and recreate consumer with DeliverPolicy.ALL
+                        await asyncio.sleep(1.0)
+                    else:
+                        print(f"Batch fetch notice: {e}")
+                        await asyncio.sleep(2.0)
+        except Exception as e:
+            print(f"Connection error in legacy sync: {e}. Retrying in 5 seconds...")
+            await asyncio.sleep(5.0)
+        finally:
+            try:
+                await nc.close()
+            except Exception:
                 pass
-            else:
-                import traceback
-                traceback.print_exc()
-                print(f"Error fetching batch: {e}")
 
 if __name__ == '__main__':
     asyncio.run(main())
