@@ -31,14 +31,42 @@ MAIN_SUBJECT = "academics.enrollment.main.student.profile"
 from nats.aio.client import Client as RawNATS
 remote_nc = RawNATS()
 
+async def ensure_local_cdc_stream():
+    local_nc = RawNATS()
+    try:
+        print(f"Ensuring 'LocalCDCStream' exists on local NATS ({LOCAL_NATS_URL})...")
+        await local_nc.connect(LOCAL_NATS_URL)
+        js = local_nc.jetstream()
+        subjects = [
+            "academics.enrollment.main",
+            "academics.enrollment.main.>",
+            "academics.enrollment.students.main.>",
+        ]
+        try:
+            await js.add_stream(name="LocalCDCStream", subjects=subjects)
+            print("Stream 'LocalCDCStream' created successfully.")
+        except Exception:
+            try:
+                await js.update_stream(name="LocalCDCStream", subjects=subjects)
+                print("Stream 'LocalCDCStream' verified/updated.")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Warning: Could not connect to local NATS to verify LocalCDCStream: {e}")
+    finally:
+        if local_nc.is_connected:
+            await local_nc.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_local_cdc_stream()
     print(f"Connecting to remote NATS {REMOTE_NATS_URL}...")
     await remote_nc.connect(REMOTE_NATS_URL, user_credentials=NATS_CREDS)
     print("Connected to remote NATS successfully!")
     async with router.lifespan_context(app):
         yield
-    await remote_nc.close()
+    if remote_nc.is_connected:
+        await remote_nc.close()
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(router)

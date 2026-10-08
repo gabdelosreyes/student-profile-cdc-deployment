@@ -1,31 +1,18 @@
-version: '3.8'
-
 services:
   nats:
     image: nats:latest
-    command: -js
+    command: -js -sd /data -m 8222
+    restart: unless-stopped
     ports:
       - "4222:4222"
       - "8222:8222"
     volumes:
       - nats-data:/data
 
-  debezium:
-    image: quay.io/debezium/server:3.0
-    depends_on:
-      - nats
-    volumes:
-      - ./debezium/application.properties:/debezium/config/application.properties
-      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/debezium/config/univ-reg.creds
-      - debezium-data:/debezium/data
-    environment:
-      - DEBEZIUM_OPTS=-Xmx256m
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
   faststream:
     build:
       context: ./consumer
+    restart: unless-stopped
     depends_on:
       - nats
     ports:
@@ -37,6 +24,21 @@ services:
     volumes:
       - ./consumer:/app
       - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  debezium:
+    image: quay.io/debezium/server:3.0
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - faststream
+    volumes:
+      - ./debezium/application.properties:/debezium/config/application.properties
+      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/debezium/config/univ-reg.creds
+      - debezium-data:/debezium/data
+    environment:
+      - DEBEZIUM_OPTS=-Xmx256m
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
