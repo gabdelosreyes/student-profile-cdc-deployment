@@ -60,6 +60,25 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  doc-request-sync:
+    build:
+      context: ./consumer
+    command: python sync_document_requests.py
+    depends_on:
+      - nats
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NATS_URL=nats://192.168.10.130:4222
+      - NATS_CREDS=/app/univ-reg.creds
+      - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
+    volumes:
+      - ./consumer:/app
+      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   nats-data:
   debezium-data:
+

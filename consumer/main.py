@@ -27,6 +27,7 @@ engine = create_engine(MYSQL_URL, pool_recycle=3600)
 
 TARGET_SUBJECT = "academics.enrollment.students.main.profile"
 MAIN_SUBJECT = "academics.enrollment.main.student.profile"
+DOC_RESPONSE_SUBJECT = "academics.enrollment.documents.students.response.created"
 
 from nats.aio.client import Client as RawNATS
 remote_nc = RawNATS()
@@ -120,6 +121,21 @@ async def handle_outbox_cdc_event(msg: dict):
         payload = dict(msg)
         event_id = payload.pop("eventId", None) or str(uuid.uuid4())
         event_type = payload.pop("eventType", None)
+
+    # Route document request responses to academics.enrollment.documents.students.response.created
+    if event_type == "document.request.response.created" or (
+        payload.get("status") == "for_release" and "control_number" in payload
+    ):
+        headers = {
+            "content-type": "application/json",
+            "eventType": str(event_type or "document.request.response.created"),
+            "Nats-Msg-Id": str(event_id),
+        }
+        control_num = payload.get("control_number")
+        print(f"Relaying document request response {control_num} (eventId={event_id}) to remote {DOC_RESPONSE_SUBJECT}...")
+        encoded = json.dumps(payload).encode("utf-8")
+        await remote_nc.publish(DOC_RESPONSE_SUBJECT, encoded, headers=headers)
+        return
 
     if "student_number" in payload or "aggregate_id" in payload or "changes" in payload:
         student_number = payload.get("student_number") or payload.get("aggregate_id")
