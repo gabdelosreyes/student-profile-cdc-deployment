@@ -1,6 +1,7 @@
 services:
   nats:
     image: nats:latest
+    container_name: cdc-nats
     command: -js -sd /data -m 8222
     restart: unless-stopped
     ports:
@@ -12,15 +13,16 @@ services:
   faststream:
     build:
       context: ./consumer
+    container_name: cdc-faststream-bridge
     restart: unless-stopped
     depends_on:
       - nats
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      - LOCAL_NATS_URL=nats://nats:4222
-      - NATS_CREDS=/app/univ-reg.creds
-      - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./consumer:/app
       - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
@@ -29,6 +31,7 @@ services:
 
   debezium:
     image: quay.io/debezium/server:3.0
+    container_name: cdc-debezium
     restart: unless-stopped
     depends_on:
       - nats
@@ -42,36 +45,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  legacy-sync:
-    build:
-      context: ./consumer
-    command: python sync_all.py
-    depends_on:
-      - nats
-    restart: unless-stopped
-    environment:
-      - PYTHONUNBUFFERED=1
-      - NATS_URL=nats://192.168.10.130:4222
-      - NATS_CREDS=/app/univ-reg.creds
-      - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
-    volumes:
-      - ./consumer:/app
-      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
   doc-request-sync:
     build:
       context: ./consumer
+    container_name: cdc-doc-request-sync
     command: python sync_document_requests.py
     depends_on:
       - nats
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - NATS_URL=nats://192.168.10.130:4222
-      - NATS_CREDS=/app/univ-reg.creds
-      - MYSQL_URL=mysql+pymysql://root:@host.docker.internal/registrar-cvsu
     volumes:
       - ./consumer:/app
       - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
@@ -81,4 +66,3 @@ services:
 volumes:
   nats-data:
   debezium-data:
-

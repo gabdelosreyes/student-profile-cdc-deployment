@@ -16,27 +16,21 @@ from faststream.nats.fastapi import NatsRouter
 from sqlalchemy import create_engine, text
 import datetime
 
-LOCAL_NATS_URL = os.getenv("LOCAL_NATS_URL", "nats://127.0.0.1:4222")
-REMOTE_NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
-NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds")
-MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cvsu")
+from config import config
 
 # Listen to LOCAL NATS where Debezium is publishing (no auth)
-router = NatsRouter(LOCAL_NATS_URL)
-engine = create_engine(MYSQL_URL, pool_recycle=3600)
-
-TARGET_SUBJECT = "academics.enrollment.students.main.profile"
-MAIN_SUBJECT = "academics.enrollment.main.student.profile"
-DOC_RESPONSE_SUBJECT = "academics.enrollment.documents.students.response.created"
+router = NatsRouter(config.local_nats_url)
+engine = create_engine(config.mysql_url, pool_recycle=3600)
 
 from nats.aio.client import Client as RawNATS
 remote_nc = RawNATS()
 
+
 async def ensure_local_cdc_stream():
     local_nc = RawNATS()
     try:
-        print(f"Ensuring 'LocalCDCStream' exists on local NATS ({LOCAL_NATS_URL})...")
-        await local_nc.connect(LOCAL_NATS_URL)
+        print(f"Ensuring '{config.local_cdc_stream}' exists on local NATS ({config.local_nats_url})...")
+        await local_nc.connect(config.local_nats_url)
         js = local_nc.jetstream()
         subjects = [
             "academics.enrollment.main",
@@ -44,16 +38,16 @@ async def ensure_local_cdc_stream():
             "academics.enrollment.students.main.>",
         ]
         try:
-            await js.add_stream(name="LocalCDCStream", subjects=subjects)
-            print("Stream 'LocalCDCStream' created successfully.")
+            await js.add_stream(name=config.local_cdc_stream, subjects=subjects)
+            print(f"Stream '{config.local_cdc_stream}' created successfully.")
         except Exception:
             try:
-                await js.update_stream(name="LocalCDCStream", subjects=subjects)
-                print("Stream 'LocalCDCStream' verified/updated.")
+                await js.update_stream(name=config.local_cdc_stream, subjects=subjects)
+                print(f"Stream '{config.local_cdc_stream}' verified/updated.")
             except Exception:
                 pass
     except Exception as e:
-        print(f"Warning: Could not connect to local NATS to verify LocalCDCStream: {e}")
+        print(f"Warning: Could not connect to local NATS to verify {config.local_cdc_stream}: {e}")
     finally:
         if local_nc.is_connected:
             await local_nc.close()
@@ -61,8 +55,8 @@ async def ensure_local_cdc_stream():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_local_cdc_stream()
-    print(f"Connecting to remote NATS {REMOTE_NATS_URL}...")
-    await remote_nc.connect(REMOTE_NATS_URL, user_credentials=NATS_CREDS)
+    print(f"Connecting to remote NATS {config.remote_nats_url}...")
+    await remote_nc.connect(config.remote_nats_url, user_credentials=config.nats_creds)
     print("Connected to remote NATS successfully!")
     async with router.lifespan_context(app):
         yield
@@ -132,9 +126,9 @@ async def handle_outbox_cdc_event(msg: dict):
             "Nats-Msg-Id": str(event_id),
         }
         control_num = payload.get("control_number")
-        print(f"Relaying document request response {control_num} (eventId={event_id}) to remote {DOC_RESPONSE_SUBJECT}...")
+        print(f"Relaying document request response {control_num} (eventId={event_id}) to remote {config.doc_response_subject}...")
         encoded = json.dumps(payload).encode("utf-8")
-        await remote_nc.publish(DOC_RESPONSE_SUBJECT, encoded, headers=headers)
+        await remote_nc.publish(config.doc_response_subject, encoded, headers=headers)
         return
 
     if "student_number" in payload or "aggregate_id" in payload or "changes" in payload:
@@ -149,10 +143,10 @@ async def handle_outbox_cdc_event(msg: dict):
             "Nats-Msg-Id": str(event_id),
         }
 
-        print(f"Relaying live student change {student_number} (op={op}, eventType={event_type}, eventId={event_id}) with headers to remote {TARGET_SUBJECT} and {MAIN_SUBJECT}...")
+        print(f"Relaying live student change {student_number} (op={op}, eventType={event_type}, eventId={event_id}) with headers to remote {config.target_student_subject} and {config.main_student_subject}...")
         encoded = json.dumps(payload).encode('utf-8')
-        await remote_nc.publish(TARGET_SUBJECT, encoded, headers=headers)
-        await remote_nc.publish(MAIN_SUBJECT, encoded, headers=headers)
+        await remote_nc.publish(config.target_student_subject, encoded, headers=headers)
+        await remote_nc.publish(config.main_student_subject, encoded, headers=headers)
         return
 
 # Legacy direct-table listener superseded by handle_outbox_cdc_event

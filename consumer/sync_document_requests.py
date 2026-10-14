@@ -17,13 +17,15 @@ from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-NATS_URL = os.getenv("NATS_URL", "nats://192.168.10.130:4222")
-NATS_CREDS = os.getenv("NATS_CREDS", r"c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds")
-MYSQL_URL = os.getenv("MYSQL_URL", "mysql+pymysql://root:@127.0.0.1/registrar-cvsu")
+from config import config
 
-STREAM_NAME = "DOCUMENTS"
-SUBJECT_FILTER = "academics.enrollment.documents.students.request.created"
-DURABLE_CONSUMER = "registrar_doc_request_sync"
+NATS_URL = config.remote_nats_url
+NATS_CREDS = config.nats_creds
+MYSQL_URL = config.mysql_url
+
+STREAM_NAME = config.doc_request_stream
+SUBJECT_FILTER = config.doc_request_subject
+DURABLE_CONSUMER = config.doc_request_consumer
 
 engine = create_engine(MYSQL_URL, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
