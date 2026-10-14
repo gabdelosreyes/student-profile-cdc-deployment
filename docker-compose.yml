@@ -25,7 +25,6 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./consumer:/app
-      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -38,7 +37,7 @@ services:
       - faststream
     volumes:
       - ./debezium/application.properties:/debezium/config/application.properties
-      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/debezium/config/univ-reg.creds
+      - ./univ-reg.creds:/debezium/config/univ-reg.creds
       - debezium-data:/debezium/data
     environment:
       - DEBEZIUM_OPTS=-Xmx256m
@@ -59,7 +58,6 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./consumer:/app
-      - c:\laragon\www\student-profile-cdc-deployment\univ-reg.creds:/app/univ-reg.creds
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
