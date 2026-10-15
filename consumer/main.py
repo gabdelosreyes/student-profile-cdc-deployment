@@ -32,11 +32,7 @@ async def ensure_local_cdc_stream():
         print(f"Ensuring '{config.local_cdc_stream}' exists on local NATS ({config.local_nats_url})...")
         await local_nc.connect(config.local_nats_url)
         js = local_nc.jetstream()
-        subjects = [
-            "academics.enrollment.main",
-            "academics.enrollment.main.>",
-            "academics.enrollment.students.main.>",
-        ]
+        subjects = config.local_cdc_stream_subjects
         try:
             await js.add_stream(name=config.local_cdc_stream, subjects=subjects)
             print(f"Stream '{config.local_cdc_stream}' created successfully.")
@@ -100,9 +96,9 @@ def get_student_payload(student_number: str) -> dict:
     return row
 
 @router.subscriber(
-    "academics.enrollment.main.student.profile",
-    stream=JStream(name="LocalCDCStream", declare=False),
-    durable="faststream_cdc_bridge",
+    config.local_cdc_consume_subject,
+    stream=JStream(name=config.local_cdc_stream, declare=False),
+    durable=config.local_cdc_consumer_name,
     no_reply=True,
 )
 async def handle_outbox_cdc_event(msg: dict):
