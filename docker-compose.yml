@@ -61,6 +61,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  legacy-sync:
+    build:
+      context: ./consumer
+    container_name: cdc-legacy-sync
+    command: python sync_legacy_students.py
+    depends_on:
+      - nats
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./consumer:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   nats-data:
   debezium-data:

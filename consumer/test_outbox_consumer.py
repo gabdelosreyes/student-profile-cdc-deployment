@@ -93,6 +93,51 @@ class TestOutboxConsumer(unittest.TestCase):
         self.assertEqual(payload["document_type"], "TOR")
         self.assertEqual(payload["id"], "01a11923-9327-719e-a010-73462b814cf1")
 
+    def test_three_tier_taxonomy_dynamic_assembly(self):
+        from config import config
+
+        # Test standardized 3-tier assembly for student profile
+        subj_student = config.build_outbound_subject("record.student-profile", "updated")
+        self.assertEqual(subj_student, "academic.univ-reg.record.student-profile.updated")
+
+        # Test document request response routes to configured DOC_RESPONSE_SUBJECT
+        subj_doc = config.build_outbound_subject("request.document", "updated")
+        self.assertEqual(subj_doc, "acad.studentportal.request.document.updated")
+
+        # Test legacy compatibility normalization
+        subj_legacy_student = config.build_outbound_subject("student_profile", "student.profile.updated")
+        self.assertEqual(subj_legacy_student, "academic.univ-reg.record.student-profile.updated")
+
+        subj_legacy_doc = config.build_outbound_subject("document_request", "document.request.response.created")
+        self.assertEqual(subj_legacy_doc, "acad.studentportal.request.document.updated")
+
+    def test_streams_registry_loading(self):
+        from config import config
+        import os
+
+        # Verify dynamic consumer resolution with no hardcoded fallback streams
+        legacy_cfg = config.get_consumer("legacy_student_sync")
+        self.assertIsNotNone(legacy_cfg)
+        self.assertEqual(legacy_cfg["name"], "legacy_student_sync")
+        self.assertEqual(legacy_cfg["durable_name"], "registrar_legacy_student_sync")
+
+        doc_cfg = config.get_consumer("document_request_sync")
+        self.assertIsNotNone(doc_cfg)
+        self.assertEqual(doc_cfg["name"], "document_request_sync")
+        self.assertEqual(doc_cfg["durable_name"], "registrar_doc_request_sync")
+
+        # Verify env override dynamically takes precedence
+        os.environ["LEGACY_STUDENT_STREAM"] = "CUSTOM_STREAM"
+        os.environ["LEGACY_STUDENT_SUBJECT"] = "custom.subject.test"
+        try:
+            custom_cfg = config.get_consumer("legacy_student_sync")
+            self.assertEqual(custom_cfg["stream"], "CUSTOM_STREAM")
+            self.assertEqual(custom_cfg["subject"], "custom.subject.test")
+        finally:
+            os.environ.pop("LEGACY_STUDENT_STREAM", None)
+            os.environ.pop("LEGACY_STUDENT_SUBJECT", None)
+
 if __name__ == "__main__":
     unittest.main()
+
 

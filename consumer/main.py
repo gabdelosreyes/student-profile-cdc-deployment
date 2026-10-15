@@ -1,10 +1,8 @@
 """
 FastStream CDC Consumer: main.py
-Description: This is the core FastStream application running inside the Docker container. 
-It listens to the local NATS stream 'LocalCDCStream' for CDC events pushed by Debezium 
-(whenever Laravel's student_profile or student_info tables change). It then combines 
-the data and publishes the final, unified payload to the remote NATS JetStream 
-subject 'academics.enrollment.main.student.profile'.
+Description: This FastStream application bridges Debezium outbox CDC events from the local
+NATS stream ('LocalCDCStream') to remote NATS JetStream, publishing to dynamically constructed
+enterprise subjects: <domain>.<system>.<service>.<entity-subentity?>.<action?>
 """
 import os
 import json
@@ -105,51 +103,41 @@ async def handle_outbox_cdc_event(msg: dict):
     # Support both envelope-wrapped payload (from Debezium additional.placement=envelope) and flat payloads
     if "payload" in msg and isinstance(msg["payload"], dict):
         event_id = msg.get("eventId") or str(uuid.uuid4())
-        event_type = msg.get("eventType")
+        event_type = msg.get("eventType") or msg.get("type")
+        aggregate_type = msg.get("aggregateType") or msg.get("aggregatetype")
         payload = msg["payload"]
     else:
         payload = dict(msg)
-        event_id = payload.pop("eventId", None) or str(uuid.uuid4())
-        event_type = payload.pop("eventType", None)
+        event_id = payload.pop("eventId", None) or payload.pop("id", None) or str(uuid.uuid4())
+        event_type = payload.pop("eventType", None) or payload.pop("type", None)
+        aggregate_type = payload.pop("aggregateType", None) or payload.pop("aggregatetype", None)
 
-    # Route document request responses to academics.enrollment.documents.students.response.created
-    if event_type == "document.request.response.created" or (
-        payload.get("status") == "for_release" and "control_number" in payload
-    ):
-        headers = {
-            "content-type": "application/json",
-            "eventType": str(event_type or "document.request.response.created"),
-            "Nats-Msg-Id": str(event_id),
-        }
-        control_num = payload.get("control_number")
-        print(f"Relaying document request response {control_num} (eventId={event_id}) to remote {config.doc_response_subject}...")
-        encoded = json.dumps(payload).encode("utf-8")
-        await remote_nc.publish(config.doc_response_subject, encoded, headers=headers)
-        return
+    # Infer aggregate_type if not explicitly set in envelope
+    if not aggregate_type:
+        if "control_number" in payload or (event_type in ("document.request.response.created", "updated") and "id" in payload):
+            aggregate_type = "request.document"
+        elif "student_number" in payload or "aggregate_id" in payload:
+            aggregate_type = "record.student-profile"
+        else:
+            aggregate_type = "record.student-profile"
 
-    if "student_number" in payload or "aggregate_id" in payload or "changes" in payload:
-        student_number = payload.get("student_number") or payload.get("aggregate_id")
+    # Infer action event_type if missing
+    if not event_type:
         op = payload.get("op", "u")
-        default_event_type = f"student.profile.{'created' if op == 'c' else 'updated' if op == 'u' else 'deleted'}"
-        event_type = event_type or default_event_type
+        event_type = "created" if op == "c" else "updated" if op == "u" else "deleted"
 
-        headers = {
-            "content-type": "application/json",
-            "eventType": str(event_type),
-            "Nats-Msg-Id": str(event_id),
-        }
+    # Dynamic 3-tier enterprise subject assembly (<domain>.<system>.<service>.<entity-subentity?>.<action?>)
+    target_subject = config.build_outbound_subject(aggregate_type, event_type)
 
-        print(f"Relaying live student change {student_number} (op={op}, eventType={event_type}, eventId={event_id}) with headers to remote {config.target_student_subject} and {config.main_student_subject}...")
-        encoded = json.dumps(payload).encode('utf-8')
-        await remote_nc.publish(config.target_student_subject, encoded, headers=headers)
-        await remote_nc.publish(config.main_student_subject, encoded, headers=headers)
-        return
+    headers = {
+        "content-type": "application/json",
+        "eventType": str(event_type),
+        "aggregateType": str(aggregate_type),
+        "Nats-Msg-Id": str(event_id),
+    }
 
-# Legacy direct-table listener superseded by handle_outbox_cdc_event
-# All student events are now unified through the outbox_events table.
-# @router.subscriber("academics.enrollment.main.registrar-cvsu.student_info")
-# @router.subscriber("academics.enrollment.main.registrar-cvsu.student_profile")
-# async def handle_student_cdc_event(msg: dict):
-#     ...
+    encoded = json.dumps(payload).encode("utf-8")
+    print(f"Relaying live {aggregate_type} change (eventId={event_id}, action={event_type}) to remote subject '{target_subject}'...")
+    await remote_nc.publish(target_subject, encoded, headers=headers)
 
 

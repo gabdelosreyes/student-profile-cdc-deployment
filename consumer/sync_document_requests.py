@@ -1,10 +1,9 @@
 """
 Document Request Ingestion Worker: sync_document_requests.py
-Description: This daemon subscribes to NATS JetStream ('DOCUMENTS' stream on subject
-'academics.enrollment.documents.students.request.created') using a durable consumer.
-It auto-provisions missing student profiles, resolves document types and purposes,
-generates atomic registrar control numbers, and ingests document requests into
-the MySQL database with status 'waiting_for_payment'.
+Description: This daemon dynamically subscribes to NATS JetStream for incoming document requests
+using a durable pull consumer. It auto-provisions missing student profiles, resolves document types
+and purposes, generates atomic registrar control numbers, and ingests document requests into the
+MySQL database with status 'waiting_for_payment'.
 """
 import asyncio
 import json
@@ -22,10 +21,6 @@ from config import config
 NATS_URL = config.remote_nats_url
 NATS_CREDS = config.nats_creds
 MYSQL_URL = config.mysql_url
-
-STREAM_NAME = config.doc_request_stream
-SUBJECT_FILTER = config.doc_request_subject
-DURABLE_CONSUMER = config.doc_request_consumer
 
 engine = create_engine(MYSQL_URL, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -304,33 +299,70 @@ def process_document_request_payload(payload: dict) -> list:
 
     return created_controls
 
+def check_document_requests_count() -> int:
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT COUNT(*) AS total FROM document_requests")).fetchone()
+            return row.total if row else 0
+    except Exception:
+        return -1
+
 async def main():
     print(f"Starting Document Request Ingestion Worker daemon...")
-    print(f"Target NATS: {NATS_URL}, Stream: {STREAM_NAME}, Subject: {SUBJECT_FILTER}")
 
     while True:
+        consumer_cfg = config.get_consumer("document_request_sync")
+        stream_name = consumer_cfg.get("stream")
+        subject_filter = consumer_cfg.get("subject")
+        durable_consumer = consumer_cfg.get("durable_name") or "registrar_doc_request_sync"
+        batch_size = consumer_cfg.get("batch_size", 50)
+        ack_wait = consumer_cfg.get("ack_wait_seconds", 60)
+
+        # Validate stream and subject
+        if not stream_name or not subject_filter:
+            print(
+                "Document request sync stream or subject is not configured. "
+                "Please configure DOC_REQUEST_STREAM and DOC_REQUEST_SUBJECT in .env."
+            )
+            await asyncio.sleep(5.0)
+            continue
+
+        print(f"Target NATS: {NATS_URL}, Stream: {stream_name}, Subject: {subject_filter}, Durable: {durable_consumer}")
+
         nc = NATS()
         try:
             print(f"Connecting to NATS at {NATS_URL}...")
             await nc.connect(NATS_URL, user_credentials=NATS_CREDS)
             js = nc.jetstream()
 
-            print(f"Subscribing with durable consumer '{DURABLE_CONSUMER}' on stream '{STREAM_NAME}'...")
+            # If local table is empty, ensure clean replay by deleting consumer if it already acked past stream messages
+            table_count = check_document_requests_count()
+            if table_count == 0:
+                try:
+                    c_info = await js.consumer_info(stream_name, durable_consumer)
+                    if c_info and c_info.ack_floor.stream_seq > 0:
+                        print(f"Database has 0 document requests but consumer '{durable_consumer}' ack_floor is {c_info.ack_floor.stream_seq}. Resetting consumer for clean replay...")
+                        await js.delete_consumer(stream_name, durable_consumer)
+                        print(f"Durable consumer '{durable_consumer}' reset.")
+                except Exception:
+                    pass
+
+            print(f"Subscribing with durable consumer '{durable_consumer}' on stream '{stream_name}'...")
             sub = await js.pull_subscribe(
-                SUBJECT_FILTER,
-                durable=DURABLE_CONSUMER,
-                stream=STREAM_NAME,
+                subject_filter,
+                durable=durable_consumer,
+                stream=stream_name,
                 config=ConsumerConfig(
                     deliver_policy=DeliverPolicy.ALL,
                     ack_policy=AckPolicy.EXPLICIT,
-                    ack_wait=60,
+                    ack_wait=ack_wait,
                 ),
             )
-            print(f"Durable subscription '{DURABLE_CONSUMER}' active. Polling messages...")
+            print(f"Durable subscription '{durable_consumer}' active. Polling messages...")
 
             while True:
                 try:
-                    msgs = await sub.fetch(50, timeout=2.0)
+                    msgs = await sub.fetch(batch_size, timeout=2.0)
                     if not msgs:
                         await asyncio.sleep(1.0)
                         continue
